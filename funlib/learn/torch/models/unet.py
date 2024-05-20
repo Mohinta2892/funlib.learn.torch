@@ -4,6 +4,21 @@ import torch
 import torch.nn as nn
 
 
+class BatchNorm4d(torch.nn.Module):
+    """Experimental BatchNorm 4D for Conv4D.
+    Copied from: https://github.com/AgamChopra/conv4d/blob/main/conv4d.py
+    """
+
+    def __init__(self, channel_size):
+        super(BatchNorm4d, self).__init__()
+        self.norm = torch.nn.BatchNorm1d(channel_size)
+
+    def forward(self, x):
+        shape_x = x.shape
+        out = self.norm(x.view(shape_x[0], shape_x[1], shape_x[2] * shape_x[3] * shape_x[4] * shape_x[5])).view(shape_x)
+        return out
+
+
 class ConvPass(torch.nn.Module):
 
     def __init__(
@@ -12,6 +27,7 @@ class ConvPass(torch.nn.Module):
             out_channels,
             kernel_sizes,
             activation,
+            batch_normalise='g',  # options- g: GroupNorm, b: BatchNorm, l: LayerNorm, i: InstanceNorm
             padding='valid'):
 
         super(ConvPass, self).__init__()
@@ -32,7 +48,7 @@ class ConvPass(torch.nn.Module):
             }[self.dims]
 
             if padding == 'same':
-                pad = tuple(k//2 for k in kernel_size)
+                pad = tuple(k // 2 for k in kernel_size)
             else:
                 pad = 0
 
@@ -47,6 +63,73 @@ class ConvPass(torch.nn.Module):
                 raise RuntimeError("%dD convolution not implemented" % self.dims)
 
             in_channels = out_channels
+
+            # BatchNorm after Conv
+            if batch_normalise == 'b':
+                try:
+                    norm = {
+                        2: nn.BatchNorm2d,
+                        3: nn.BatchNorm3d,
+                        4: BatchNorm4d
+                    }[self.dims]
+
+                    # add BatchNorm before activation; one of the conventions
+                    layers.append(norm(out_channels))
+
+                except KeyError as e:
+                    raise e
+
+            # pick 2D/3D group norm; not implemented for 4D
+            elif batch_normalise == 'g':
+                try:
+                    norm = {
+                        2: nn.GroupNorm,
+                        3: nn.GroupNorm,
+                    }[self.dims]
+                    # some divisor of channels out, bigger than 1 but less than channels_out
+                    num_groups = 2  # experimental; can be tweaked
+                    layers.append(norm(num_groups=num_groups, num_channels=out_channels))
+
+                # todo: make more informative
+                except KeyError as e:
+                    raise Exception(" GroupNorm not implemented for 4D")
+
+            # pick 2D/3D layer norm; not implemented for 4D
+            elif batch_normalise == 'l':
+                try:
+                    norm = {
+                        2: nn.GroupNorm,
+                        3: nn.GroupNorm,
+                    }[self.dims]
+                    layers.append(norm(num_groups=1, num_channels=out_channels))
+
+                # todo: make more informative
+                except KeyError as e:
+                    raise Exception(" LayerNorm not implemented for 4D")
+
+            # pick 2D/3D instance norm; not implemented for 4D
+            # Instance norm may remove the effects of Contrast:
+            # https://tungmphung.com/deep-learning-normalization-methods/
+            elif batch_normalise == 'i':
+                try:
+                    norm = {
+                        2: nn.GroupNorm2d,
+                        3: nn.GroupNorm3d,
+                    }[self.dims]
+                    # GroupNorm configured like this becomes instance norm
+                    layers.append(norm(num_groups=out_channels, num_channels=out_channels))
+
+                # todo: make more informative
+                except KeyError as e:
+                    raise Exception(" InstanceNorm not implemented for 4D")
+
+            # `Kaiming` init may work better for ReLU activations: https://arxiv.org/abs/1502.01852
+            # copied from Wpatton's
+            # https://github.com/pattonw/funlib.learn.torch/commit/7171a7cc2ca1106c4d68390350b412d44284152d
+            if isinstance(activation, torch.nn.ReLU):
+                torch.nn.init.kaiming_normal_(layers[-1].weight)
+                if layers[-1].bias is not None:
+                    torch.nn.init.zeros_(layers[-1].bias)
 
             if activation is not None:
                 layers.append(activation())
@@ -168,21 +251,20 @@ class Upsample(torch.nn.Module):
         # s' = n*k + c
 
         ns = (
-            int(math.floor(float(s - c)/f))
+            int(math.floor(float(s - c) / f))
             for s, c, f in zip(spatial_shape, convolution_crop, factor)
         )
         target_spatial_shape = tuple(
-            n*f + c
+            n * f + c
             for n, c, f in zip(ns, convolution_crop, factor)
         )
 
         if target_spatial_shape != spatial_shape:
-
             assert all((
-                    (t > c) for t, c in zip(
-                        target_spatial_shape,
-                        convolution_crop))
-                ), \
+                (t > c) for t, c in zip(
+                target_spatial_shape,
+                convolution_crop))
+            ), \
                 "Feature map with shape %s is too small to ensure " \
                 "translation equivariance with factor %s and following " \
                 "convolutions %s" % (
@@ -200,7 +282,7 @@ class Upsample(torch.nn.Module):
         x_target_size = x.size()[:-self.dims] + shape
 
         offset = tuple(
-            (a - b)//2
+            (a - b) // 2
             for a, b in zip(x.size(), x_target_size))
 
         slices = tuple(
@@ -242,6 +324,7 @@ class UNet(torch.nn.Module):
             num_fmaps_out=None,
             num_heads=1,
             constant_upsample=False,
+            batch_normalise='i',
             padding='valid'):
         '''Create a U-Net::
 
@@ -336,6 +419,13 @@ class UNet(torch.nn.Module):
             padding (optional):
 
                 How to pad convolutions. Either 'same' or 'valid' (default).
+
+            batch_normalise (optional):
+                Normalise the batches/instances/layers after convolution.
+                Options: 'i' - InstanceNorm; 'g' - GroupNorm; 'b' - BatchNorm; 'l' - LayerNorm
+                Instance norm may remove the effects of Contrast, so use with caution:
+                https://tungmphung.com/deep-learning-normalization-methods/
+
         '''
 
         super(UNet, self).__init__()
@@ -348,9 +438,9 @@ class UNet(torch.nn.Module):
         # default arguments
 
         if kernel_size_down is None:
-            kernel_size_down = [[(3, 3, 3), (3, 3, 3)]]*self.num_levels
+            kernel_size_down = [[(3, 3, 3), (3, 3, 3)]] * self.num_levels
         if kernel_size_up is None:
-            kernel_size_up = [[(3, 3, 3), (3, 3, 3)]]*(self.num_levels - 1)
+            kernel_size_up = [[(3, 3, 3), (3, 3, 3)]] * (self.num_levels - 1)
 
         # compute crop factors for translation equivariance
         crop_factors = []
@@ -360,7 +450,7 @@ class UNet(torch.nn.Module):
                 factor_product = list(factor)
             else:
                 factor_product = list(
-                    f*ff
+                    f * ff
                     for f, ff in zip(factor, factor_product))
             crop_factors.append(factor_product)
         crop_factors = crop_factors[::-1]
@@ -372,10 +462,11 @@ class UNet(torch.nn.Module):
             ConvPass(
                 in_channels
                 if level == 0
-                else num_fmaps*fmap_inc_factor**(level - 1),
-                num_fmaps*fmap_inc_factor**level,
+                else num_fmaps * fmap_inc_factor ** (level - 1),
+                num_fmaps * fmap_inc_factor ** level,
                 kernel_size_down[level],
                 activation=activation,
+                batch_normalise=batch_normalise,
                 padding=padding)
             for level in range(self.num_levels)
         ])
@@ -393,8 +484,8 @@ class UNet(torch.nn.Module):
                 Upsample(
                     downsample_factors[level],
                     mode='nearest' if constant_upsample else 'transposed_conv',
-                    in_channels=num_fmaps*fmap_inc_factor**(level + 1),
-                    out_channels=num_fmaps*fmap_inc_factor**(level + 1),
+                    in_channels=num_fmaps * fmap_inc_factor ** (level + 1),
+                    out_channels=num_fmaps * fmap_inc_factor ** (level + 1),
                     crop_factor=crop_factors[level],
                     next_conv_kernel_sizes=kernel_size_up[level],
                     padding=padding)
@@ -407,13 +498,14 @@ class UNet(torch.nn.Module):
         self.r_conv = nn.ModuleList([
             nn.ModuleList([
                 ConvPass(
-                    num_fmaps*fmap_inc_factor**level +
-                    num_fmaps*fmap_inc_factor**(level + 1),
-                    num_fmaps*fmap_inc_factor**level
+                    num_fmaps * fmap_inc_factor ** level +
+                    num_fmaps * fmap_inc_factor ** (level + 1),
+                    num_fmaps * fmap_inc_factor ** level
                     if num_fmaps_out is None or level != 0
                     else num_fmaps_out,
                     kernel_size_up[level],
                     activation=activation,
+                    batch_normalise=batch_normalise,
                     padding=padding)
                 for level in range(self.num_levels - 1)
             ])
@@ -431,7 +523,7 @@ class UNet(torch.nn.Module):
         # end of recursion
         if level == 0:
 
-            fs_out = [f_left]*self.num_heads
+            fs_out = [f_left] * self.num_heads
 
         else:
 
