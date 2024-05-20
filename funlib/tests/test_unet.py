@@ -4,21 +4,62 @@ import pytest
 import torch
 import unittest
 import warnings
+from torchinfo import summary
+
 warnings.filterwarnings("error")
 
 
 class TestUNet(unittest.TestCase):
 
     def test_creation(self):
-
         unet = models.UNet(
             in_channels=1,
             num_fmaps=3,
-            fmap_inc_factors=2,
-            downsample_factors=[[2, 2, 2], [2, 2, 2]])
+            fmap_inc_factor=2,
+            downsample_factors=[[2, 2, 2], [2, 2, 2]],
+            batch_normalise='b')
 
         x = np.zeros((1, 1, 100, 80, 48), dtype=np.float64)
         x = torch.from_numpy(x).float()
+
+        # print(summary(unet, input_size=x.shape))
+
+        y = unet.forward(x).data.numpy()
+
+        assert y.shape == (1, 3, 60, 40, 8)
+
+        # group norm:
+        unet = models.UNet(
+            in_channels=1,
+            num_fmaps=6,
+            fmap_inc_factor=2,
+            downsample_factors=[[2, 2, 2], [2, 2, 2]],
+            batch_normalise='g')
+
+        x = np.zeros((1, 1, 100, 80, 48), dtype=np.float64)
+        x = torch.from_numpy(x).float()
+
+        # unet.train()
+        # print("GroupNorm")
+        # print(summary(unet, input_size=x.shape))
+
+        y = unet.forward(x).data.numpy()
+
+        assert y.shape == (1, 6, 60, 40, 8)
+
+        # instance norm
+        unet = models.UNet(
+            in_channels=1,
+            num_fmaps=3,
+            fmap_inc_factor=2,
+            downsample_factors=[[2, 2, 2], [2, 2, 2]],
+            batch_normalise='i')
+
+        x = np.zeros((1, 1, 100, 80, 48), dtype=np.float64)
+        x = torch.from_numpy(x).float()
+
+        unet.train()
+        print(summary(unet, input_size=x.shape))
 
         y = unet.forward(x).data.numpy()
 
@@ -27,16 +68,32 @@ class TestUNet(unittest.TestCase):
         unet = models.UNet(
             in_channels=1,
             num_fmaps=3,
-            fmap_inc_factors=2,
+            fmap_inc_factor=2,
             downsample_factors=[[2, 2, 2], [2, 2, 2]],
-            num_fmaps_out=5)
+            batch_normalise='l')
+
+        x = np.zeros((1, 1, 100, 80, 48), dtype=np.float64)
+        x = torch.from_numpy(x).float()
+
+        # print(summary(unet, input_size=x.shape))
+
+        y = unet.forward(x).data.numpy()
+
+        assert y.shape == (1, 3, 60, 40, 8)
+
+        unet = models.UNet(
+            in_channels=1,
+            num_fmaps=3,
+            fmap_inc_factor=2,
+            downsample_factors=[[2, 2, 2], [2, 2, 2]],
+            num_fmaps_out=5,
+            batch_normalise='b')
 
         y = unet.forward(x).data.numpy()
 
         assert y.shape == (1, 5, 60, 40, 8)
 
     def test_shape_warning(self):
-
         x = np.zeros((1, 1, 100, 80, 48), dtype=np.float64)
         x = torch.from_numpy(x).float()
 
@@ -45,20 +102,19 @@ class TestUNet(unittest.TestCase):
             unet = models.UNet(
                 in_channels=1,
                 num_fmaps=3,
-                fmap_inc_factors=2,
+                fmap_inc_factor=2,
                 downsample_factors=[[2, 3, 2], [2, 2, 2]],
                 num_fmaps_out=5)
             unet.forward(x).data.numpy()
 
     # def test_4d(self):
-        # TODO
+    # TODO
 
     def test_multi_head(self):
-
         unet = models.UNet(
             in_channels=1,
             num_fmaps=3,
-            fmap_inc_factors=2,
+            fmap_inc_factor=2,
             downsample_factors=[[2, 2, 2], [2, 2, 2]],
             num_heads=3)
 
@@ -71,3 +127,8 @@ class TestUNet(unittest.TestCase):
         assert y[0].data.numpy().shape == (1, 3, 60, 40, 8)
         assert y[1].data.numpy().shape == (1, 3, 60, 40, 8)
         assert y[2].data.numpy().shape == (1, 3, 60, 40, 8)
+
+
+if __name__ == "__main__":
+    test = TestUNet()
+    test.test_creation()
