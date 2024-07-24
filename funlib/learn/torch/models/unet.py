@@ -122,6 +122,8 @@ class ConvPass(torch.nn.Module):
                 # todo: make more informative
                 except KeyError as e:
                     raise Exception(" InstanceNorm not implemented for 4D")
+            elif batch_normalise is None:
+                pass
 
             # `Kaiming` init may work better for ReLU activations: https://arxiv.org/abs/1502.01852
             # copied from Wpatton's
