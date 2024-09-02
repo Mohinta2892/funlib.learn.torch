@@ -87,7 +87,7 @@ class ConvPass(torch.nn.Module):
                         3: nn.GroupNorm,
                     }[self.dims]
                     # some divisor of channels out, bigger than 1 but less than channels_out
-                    num_groups = 2  # experimental; can be tweaked
+                    num_groups = 1  # experimental; can be tweaked
                     layers.append(norm(num_groups=num_groups, num_channels=out_channels))
 
                 # todo: make more informative
@@ -113,8 +113,8 @@ class ConvPass(torch.nn.Module):
             elif batch_normalise == 'i':
                 try:
                     norm = {
-                        2: nn.GroupNorm2d,
-                        3: nn.GroupNorm3d,
+                        2: nn.GroupNorm,
+                        3: nn.GroupNorm,
                     }[self.dims]
                     # GroupNorm configured like this becomes instance norm
                     layers.append(norm(num_groups=out_channels, num_channels=out_channels))
